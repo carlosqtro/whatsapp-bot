@@ -1,0 +1,27 @@
+{
+  "whatsapp:+59899881212": {
+    "step": "menu",
+    "pedido": []
+  },
+  "whatsapp:+59893415294": {
+    "step": "cerrado",
+    "pedido": [
+      {
+        "id": 2,
+        "name": "Chivito al plato",
+        "price": 420,
+        "type": "plato"
+      },
+      {
+        "id": 2,
+        "name": "Chivito al plato",
+        "price": 420,
+        "type": "plato"
+      }
+    ]
+  },
+  "whatsapp:+59899329168": {
+    "step": "menu",
+    "pedido": []
+  }
+}

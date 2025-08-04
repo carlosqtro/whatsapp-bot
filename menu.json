@@ -1,0 +1,7 @@
+[
+  { "id": 1, "name": "Milanesa con puré", "price": 350, "type": "plato" },
+  { "id": 2, "name": "Chivito al plato", "price": 420, "type": "plato" },
+  { "id": 3, "name": "Pizza muzzarella", "price": 300, "type": "plato" },
+  { "id": 4, "name": "Coca-Cola 500ml", "price": 120, "type": "bebida" },
+  { "id": 5, "name": "Agua mineral", "price": 90, "type": "bebida" }
+]
