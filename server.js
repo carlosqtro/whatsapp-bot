@@ -1,274 +1,199 @@
-// whatsapp-server.js (Versión 10.0 - Final y Completa)
+// whatsapp-server.js (Versión 14.2 - Producción Estable y Completa)
 
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
+const Brevo = require('@getbrevo/brevo');
 const twilio = require('twilio');
-const { menu, categoriasUnicas, getCategoriasMenu, getItemsPorCategoria } = require('./menu');
+const { categoriasUnicas, getCategoriasMenu, getItemsPorCategoria } = require('./menu');
+const fs = require('fs');
 
-// --- Configuración ---
+// --- Inicialización de APIs ---
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
-const client = twilio(accountSid, authToken);
-const twilioPhoneNumber = 'whatsapp:+14155238886'; // Número del Sandbox de Twilio
+const twilioClient = twilio(accountSid, authToken);
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-
-const sessions = {}; // Objeto para gestionar las sesiones de cada usuario
-
-// --- Funciones de Ayuda ---
-
-function mostrarResumen(session) {
-    if (!session.pedido || session.pedido.length === 0) {
-        return "";
-    }
-    let resumen = "🧾 *Resumen de tu pedido actual:*\n";
-    let total = 0;
-    session.pedido.forEach((p, index) => {
-        const subtotal = p.price * p.cantidad;
-        resumen += `${index + 1}️⃣ - ${p.cantidad}x ${p.name} ($${p.price} c/u) - $${subtotal}\n`;
-        total += subtotal;
-    });
-    resumen += `\n*Total: $${total}*`;
-    return resumen;
+const brevoApiInstance = new Brevo.TransactionalEmailsApi();
+try {
+    brevoApiInstance.apiClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
+} catch (err) {
+    console.error('❌ No se pudo inicializar la API Key de Brevo.');
 }
 
-function construirVistaDeProductos(session) {
-    let textoRespuesta = "";
-    const resumen = mostrarResumen(session);
-    if (resumen) {
-        textoRespuesta += resumen + "\n\n---\n\n";
-    }
+// --- Gestión de usuarios y sesiones ---
+const RUTA_USUARIOS = './usuarios.json';
+const sessions = {};
+function cargarUsuarios() { try { if (fs.existsSync(RUTA_USUARIOS)) { const data = fs.readFileSync(RUTA_USUARIOS, 'utf8'); return data ? JSON.parse(data) : {}; } else { fs.writeFileSync(RUTA_USUARIOS, JSON.stringify({}, null, 2)); return {}; } } catch { return {}; } }
+function guardarUsuario(from, userData) { try { const usuarios = cargarUsuarios(); usuarios[from] = { ...(usuarios[from] || {}), ...userData }; fs.writeFileSync(RUTA_USUARIOS, JSON.stringify(usuarios, null, 2)); } catch {} }
 
-    const itemsCategoria = getItemsPorCategoria(session.categoriaActual);
-    const iconoCategoria = session.categoriaActual === 'Platos Principales' ? '🥘' : (session.categoriaActual === 'Bebidas' ? '🥤' : '🍰');
-    textoRespuesta += `${iconoCategoria} *${session.categoriaActual}:*\n`;
-    
-    itemsCategoria.forEach((item, index) => {
-        textoRespuesta += `*${index + 1}️⃣* ${item.name} - $${item.price}\n`;
-    });
-    textoRespuesta += "\n➡️ _Escribe el número (ej: 1) o número y cantidad (ej: 1x2)._";
+// --- Formatos de notificación ---
+function formatearResumenParaLocal(session, datosFinales) { let texto = `*¡NUEVO PEDIDO RECIBIDO!* - ${new Date().toLocaleTimeString('es-UY')}\n\n`; texto += `*Cliente:* ${datosFinales.nombre}\n`; texto += `*Teléfono:* ${datosFinales.telefono.replace('whatsapp:','')}\n`; texto += `*Tipo de pago:* ${datosFinales.pago}\n\n`; if (datosFinales.tipo === 'mesa') { texto += `*Tipo:* Mesa\n*Número:* ${datosFinales.mesa}\n\n`; } else { texto += `*Tipo:* Domicilio\n*Dirección:* ${datosFinales.direccion}\n\n`; } texto += "--- *Detalle del Pedido* ---\n"; let total = 0; session.pedido.forEach(item => { const subtotal = item.price * item.cantidad; texto += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`; total += subtotal; }); texto += `\n*TOTAL: $${total}*`; return texto; }
+function formatearResumenParaEmail(session, datosFinales) { let html = `<h1>Nuevo Pedido</h1>`; html += `<p><strong>Cliente:</strong> ${datosFinales.nombre}</p>`; html += `<p><strong>Teléfono:</strong> ${datosFinales.telefono.replace('whatsapp:','')}</p>`; html += `<p><strong>Tipo de pago:</strong> ${datosFinales.pago}</p>`; if (datosFinales.tipo === 'mesa') { html += `<p><strong>Tipo:</strong> Mesa</p><p><strong>Número:</strong> ${datosFinales.mesa}</p>`; } else { html += `<p><strong>Tipo:</strong> Domicilio</p><p><strong>Dirección:</strong> ${datosFinales.direccion}</p>`; } html += "<h2>Detalle</h2><ul>"; let total = 0; session.pedido.forEach(item => { const subtotal = item.price * item.cantidad; html += `<li>${item.cantidad}x ${item.name} - $${subtotal}</li>`; total += subtotal; }); html += `</ul><h3>Total: $${total}</h3>`; return html; }
 
-    textoRespuesta += "\n\n👉 Elige una opción:\n*V* - Ver foto de un producto\n*C* - Volver a las categorías";
-    if (session.pedido && session.pedido.length > 0) {
-        textoRespuesta += "\n*E* - Eliminar un producto\n*F* - Finalizar pedido";
-    }
-    textoRespuesta += "\n*S* - Salir";
-    return textoRespuesta;
-}
+// --- Enviar notificaciones ---
+async function enviarNotificaciones(resumenTexto, resumenHtml) { console.log('\n--- 📨 Enviando notificaciones ---'); try { await twilioClient.messages.create({ from: process.env.TWILIO_WHATSAPP_NUMBER, to: process.env.RESTAURANT_WHATSAPP_NUMBER, body: resumenTexto }); console.log('✅ WhatsApp enviado.'); } catch (error) { console.error('❌ Error WhatsApp:', error.message); } try { let email = new Brevo.SendSmtpEmail(); email.subject = "Nuevo Pedido"; email.htmlContent = resumenHtml; email.sender = { name: "Bot Pedidos", email: process.env.SENDER_EMAIL_ADDRESS }; email.to = [{ email: process.env.RESTAURANT_EMAIL_ADDRESS }]; await brevoApiInstance.sendTransacEmail(email); console.log('✅ Email enviado.'); } catch (error) { console.error('❌ Error Email:', error.message); } }
 
+// --- Utilidades del Bot ---
+function mostrarResumen(s) { if (!s.pedido.length) return ""; let txt = "🧾 *Resumen:*\n"; let total = 0; s.pedido.forEach((p, i) => { const sub = p.price * p.cantidad; txt += `${i + 1}️⃣ ${p.cantidad}x ${p.name} - $${sub}\n`; total += sub; }); txt += `\n*Total:* $${total}`; return txt; }
+function construirVistaDeProductos(s) { let txt = mostrarResumen(s); if (txt) txt += "\n\n---\n\n"; const items = getItemsPorCategoria(s.categoriaActual); items.forEach((it, i) => txt += `*${i + 1}* ${it.name} - $${it.price}\n`); txt += "\n*V* - Ver foto | *C* - Categorías"; if (s.pedido.length) txt += " | *E* - Eliminar | *F* - Finalizar"; txt += " | *S* - Salir"; return txt; }
+function analizarEntradaPedido(input) { let t = input.trim().toLowerCase().replace(/[,;.\-*]/g, ' ').replace(/(\d)\s*x\s*(\d)/g, '$1x$2'); const tokens = t.split(/\s+/).filter(Boolean); const pedidos = []; let i = 0; while (i < tokens.length) { if (tokens[i].includes('x')) { const m = tokens[i].match(/^(\d+)x(\d+)$/); if (m) pedidos.push({ itemIndex: parseInt(m[1]) - 1, cantidad: parseInt(m[2]) }); i++; continue; } if (/^\d+$/.test(tokens[i])) { const next = tokens[i + 1]; if (next && /^\d+$/.test(next)) { pedidos.push({ itemIndex: parseInt(tokens[i]) - 1, cantidad: parseInt(next) }); i += 2; } else { pedidos.push({ itemIndex: parseInt(tokens[i]) - 1, cantidad: 1 }); i++; } } else i++; } return pedidos; }
+function direccionValida(txt) { return txt.length >= 5 && /\d/.test(txt) && /[a-zA-Z]/.test(txt); }
+function pagoValido(op) { return ['e', 't', 'mp'].includes(op.toLowerCase()); }
 
-// --- Lógica Principal del Chatbot ---
-
+// --- Lógica Principal del Bot Unificada ---
 async function handleIncomingMessage(from, body) {
     const input = body.trim().toLowerCase();
-    
-    if (!sessions[from] || input === 'hola') {
-        sessions[from] = { step: 'viendo_categorias', pedido: [], itemIndexParaEliminar: null };
-    }
-    const session = sessions[from];
-    let replyText = '';
+    const client = twilioClient;
 
-    switch (session.step) {
+    if (!sessions[from]) {
+        const matchMesa = input.match(/^mesa(\d+)-/);
+        if (matchMesa) {
+            sessions[from] = { step: 'viendo_categorias', pedido: [], tipoPedido: 'mesa', mesa: matchMesa[1], telefono: from };
+            await client.messages.create({ to: from, from: process.env.TWILIO_WHATSAPP_NUMBER, body: `¡Hola! Bienvenido a la mesa *${matchMesa[1]}*.\n\n` + getCategoriasMenu() });
+        } else {
+            sessions[from] = { step: 'viendo_categorias', pedido: [], tipoPedido: 'domicilio', telefono: from };
+            await client.messages.create({ to: from, from: process.env.TWILIO_WHATSAPP_NUMBER, body: getCategoriasMenu() });
+        }
+        return;
+    }
+
+    const s = sessions[from];
+    let reply = '';
+    let media = null;
+
+    switch (s.step) {
         case 'viendo_categorias':
-            if (input === 's') {
-                replyText = "¡Gracias por tu preferencia! Hasta pronto. 👋";
-                delete sessions[from];
-                break;
-            }
-            const catIndex = parseInt(input) - 1;
-            if (categoriasUnicas[catIndex]) {
-                session.categoriaActual = categoriasUnicas[catIndex];
-                session.step = 'viendo_productos';
-                replyText = construirVistaDeProductos(session);
-            } else {
-                replyText = "Opción no válida. Por favor, elige un número de la lista de categorías.\n\n" + getCategoriasMenu();
-            }
+            if (/^\d+$/.test(input) && categoriasUnicas[input - 1]) {
+                s.categoriaActual = categoriasUnicas[input - 1]; s.step = 'viendo_productos';
+                reply = construirVistaDeProductos(s);
+            } else if (input === 's') {
+                s.previousStep = s.step; s.step = 'confirmar_salida';
+                reply = s.pedido.length ? "⚠️ Si sales perderás tu pedido. ¿Seguro? (S/N)" : "¿Seguro que quieres salir? (S/N)";
+            } else reply = "Opción no válida.\n" + getCategoriasMenu();
             break;
 
         case 'viendo_productos':
-            const match = input.match(/^(\d+)(?:x(\d+))?$/);
-            if (match) {
-                const itemIndex = parseInt(match[1]) - 1;
-                const cantidad = match[2] ? parseInt(match[2]) : 1;
-                const itemsDeCategoriaActual = getItemsPorCategoria(session.categoriaActual);
-                const itemSeleccionado = itemsDeCategoriaActual[itemIndex];
-
-                if (itemSeleccionado) {
-                    const itemEnPedido = session.pedido.find(p => p.id === itemSeleccionado.id);
-                    if (itemEnPedido) {
-                        itemEnPedido.cantidad += cantidad;
-                    } else {
-                        session.pedido.push({ ...itemSeleccionado, cantidad: cantidad });
-                    }
-                    replyText = `✅ ${cantidad}x ${itemSeleccionado.name} agregado(s).\n\n${construirVistaDeProductos(session)}`;
-                } else {
-                    replyText = `❌ Número no válido para esta categoría.\n\n${construirVistaDeProductos(session)}`;
+            const comandos = {
+                'c': () => { s.step = 'viendo_categorias'; reply = getCategoriasMenu() + (s.pedido.length ? "\n\n" + mostrarResumen(s) : ""); },
+                'v': () => { s.step = 'solicitar_foto'; reply = `Estás en *${s.categoriaActual}*.\n\n¿De qué número de producto deseas ver la foto?`; },
+                'e': () => { if (s.pedido.length > 0) { s.step = 'eliminando'; reply = `${mostrarResumen(s)}\n\nEscribe el número del ítem y cantidad (ej: *1 2*).\nPara eliminar todo escribe *T*.\nV para volver`; } else { reply = "No tienes productos en el pedido."; } },
+                's': () => { s.previousStep = s.step; s.step = 'confirmar_salida'; reply = s.pedido.length ? "⚠️ Si sales perderás tu pedido. ¿Seguro? (S/N)" : "¿Seguro que quieres salir? (S/N)"; },
+                'f': () => {
+                    if (!s.pedido.length) { reply = "No tienes productos en el pedido."; }
+                    else if (s.tipoPedido === 'mesa') { s.step = 'solicitar_pago'; reply = "💰 ¿Cómo pagará?\nE - Efectivo\nT - Tarjeta\nMP - MercadoPago"; }
+                    else { s.step = 'solicitar_nombre'; reply = "📝 Por favor, indica a nombre de quién es el pedido:"; }
                 }
+            };
+            if (comandos[input]) {
+                comandos[input]();
             } else {
-                switch (input) {
-                    case 'c':
-                        session.step = 'viendo_categorias';
-                        replyText = getCategoriasMenu();
-                        break;
-                    case 'v':
-                        session.step = 'solicitar_foto';
-                        replyText = `Estás en la categoría *${session.categoriaActual}*.\n\n¿De qué número de producto deseas ver la foto?`;
-                        break;
-                    case 'e':
-                        if (session.pedido.length > 0) {
-                            session.step = 'eliminando';
-                            replyText = `${mostrarResumen(session)}\n\nEscribe el número del ítem que deseas modificar (o 'V' para volver).`;
-                        } else {
-                            replyText = `No tienes productos en el pedido.\n\n${construirVistaDeProductos(session)}`;
-                        }
-                        break;
-                    case 'f':
-                        if (session.pedido.length > 0) {
-                            session.step = 'confirmar';
-                            replyText = `${mostrarResumen(session)}\n\n👉 ¿Confirmas tu pedido?\n*F* - Confirmar y finalizar\n*V* - Volver`;
-                        } else {
-                            replyText = `No tienes productos en el pedido.\n\n${construirVistaDeProductos(session)}`;
-                        }
-                        break;
-                    case 's':
-                        session.step = 'confirmar_salida';
-                        replyText = "¿Estás seguro de que quieres salir y borrar tu pedido?\n\n*V* - Volver al pedido\n*S* - Salir completamente";
-                        break;
-                    default:
-                        replyText = `❌ Opción no válida.\n\n${construirVistaDeProductos(session)}`;
+                const pedidos = analizarEntradaPedido(input);
+                if (!pedidos.length) { reply = `No entendí tu pedido.\n${construirVistaDeProductos(s)}`; } 
+                else {
+                    s.pedidoTemporal = {}; let errores = []; const items = getItemsPorCategoria(s.categoriaActual);
+                    let confirmacionText = "Entendido. Voy a agregar:\n";
+                    pedidos.forEach(p => { if (items[p.itemIndex]) { const itemReal = items[p.itemIndex]; if (s.pedidoTemporal[itemReal.id]) { s.pedidoTemporal[itemReal.id].cantidad += p.cantidad; } else { s.pedidoTemporal[itemReal.id] = { ...itemReal, cantidad: p.cantidad }; } } else { errores.push(`El ítem ${p.itemIndex + 1} no es válido.`); } });
+                    if (Object.keys(s.pedidoTemporal).length > 0) {
+                        for(const id in s.pedidoTemporal) { const item = s.pedidoTemporal[id]; confirmacionText += `\n• ${item.cantidad}x ${item.name}`; }
+                        if (errores.length) confirmacionText += `\n\n(Nota: ${errores.join(', ')})`;
+                        reply = `${confirmacionText}\n\n¿Es correcto? (S/N)`;
+                        s.step = 'confirmar_agregados';
+                    } else {
+                        reply = `No se encontraron productos válidos.\n${construirVistaDeProductos(s)}`;
+                    }
                 }
             }
             break;
-
-        case 'solicitar_foto':
-            if (input === 'v' || input === 'c' || input === 'm') {
-                session.step = 'viendo_productos';
-                replyText = construirVistaDeProductos(session);
-                break;
-            }
-            const itemIndexFoto = parseInt(input) - 1;
-            const itemsCategoriaFoto = getItemsPorCategoria(session.categoriaActual);
-            const itemMenuFoto = itemsCategoriaFoto[itemIndexFoto];
-
-            if (itemMenuFoto && itemMenuFoto.imageUrl) {
-                const descripcion = `*${itemIndexFoto + 1}️⃣* ${itemMenuFoto.name} - $${itemMenuFoto.price}`;
-                const Cta = `\n\nPara añadirlo, escribe ${itemIndexFoto + 1}x1. Para volver, escribe V.`;
-                await client.messages.create({ body: `${descripcion}${Cta}`, from: twilioPhoneNumber, to: from, mediaUrl: [itemMenuFoto.imageUrl] });
-                
-                session.step = 'viendo_productos'; // Corrección para volver al estado correcto
-                return;
-            } else {
-                replyText = "Lo siento, no encontré ese producto o no tiene foto. Escribe otro número o 'V' para volver.";
-            }
+            
+        case 'confirmar_agregados':
+            if (input === 's') { for (const id in s.pedidoTemporal) { const nuevo = s.pedidoTemporal[id]; const existente = s.pedido.find(p => p.id === nuevo.id); if (existente) { existente.cantidad += nuevo.cantidad; } else { s.pedido.push(nuevo); } } reply = `✅ ¡Listo! Productos agregados.\n\n${construirVistaDeProductos(s)}`; }
+            else { reply = `🚫 Operación cancelada.\n\n${construirVistaDeProductos(s)}`; }
+            delete s.pedidoTemporal; s.step = 'viendo_productos';
             break;
 
         case 'eliminando':
-            if (input === 'v') {
-                session.step = 'viendo_productos';
-                replyText = construirVistaDeProductos(session);
-                break;
-            }
-            const lineIndex = parseInt(input) - 1;
-            const item_a_modificar = session.pedido[lineIndex];
-
-            if (item_a_modificar) {
-                if (item_a_modificar.cantidad > 1) {
-                    session.step = 'eliminando_cantidad';
-                    session.itemIndexParaEliminar = lineIndex;
-                    replyText = `Tienes ${item_a_modificar.cantidad}x ${item_a_modificar.name}. ¿Cuántas unidades deseas eliminar? (o 'T' para eliminarlas todas)`;
-                } else {
-                    const itemBorrado = session.pedido.splice(lineIndex, 1);
-                    session.step = 'viendo_productos';
-                    replyText = `✅ ${itemBorrado[0].name} eliminado completamente.\n\n${construirVistaDeProductos(session)}`;
-                }
-            } else {
-                replyText = "❌ Número de ítem no válido. Intenta de nuevo o escribe 'V' para volver.";
-            }
+            if (input === 'v') { s.step = 'viendo_productos'; reply = construirVistaDeProductos(s); }
+            else if (input === 't') { s.pedido = []; s.step = 'viendo_categorias'; reply = "🗑️ Pedido eliminado.\n" + getCategoriasMenu(); } 
+            else { const [idx, cant] = input.split(' ').map(Number); if (!isNaN(idx) && s.pedido[idx - 1]) { const cantAQuitar = isNaN(cant) ? s.pedido[idx - 1].cantidad : cant; s.pedido[idx - 1].cantidad -= cantAQuitar; if (s.pedido[idx - 1].cantidad <= 0) s.pedido.splice(idx - 1, 1); s.step = s.pedido.length ? 'viendo_productos' : 'viendo_categorias'; reply = `✅ Ítem(s) eliminado(s).\n\n` + (s.pedido.length ? construirVistaDeProductos(s) : getCategoriasMenu()); } else { reply = "Formato inválido."; } }
             break;
 
-        case 'eliminando_cantidad':
-            const itemIndex = session.itemIndexParaEliminar;
-            const item = session.pedido[itemIndex];
-            const cantidad_a_eliminar = parseInt(input);
-
-            if (input === 't') {
-                const itemBorrado = session.pedido.splice(itemIndex, 1);
-                replyText = `✅ ${itemBorrado[0].name} eliminado completamente.`;
-            } else if (!isNaN(cantidad_a_eliminar) && cantidad_a_eliminar > 0) {
-                if (cantidad_a_eliminar >= item.cantidad) {
-                    const itemBorrado = session.pedido.splice(itemIndex, 1);
-                    replyText = `✅ ${itemBorrado[0].name} eliminado completamente.`;
-                } else {
-                    item.cantidad -= cantidad_a_eliminar;
-                    replyText = `✅ ${cantidad_a_eliminar} unidad(es) de ${item.name} eliminada(s).`;
-                }
-            } else {
-                replyText = "❌ Opción no válida. Debes escribir un número o 'T'.";
-                return replyText; 
-            }
-            session.itemIndexParaEliminar = null;
-            session.step = 'viendo_productos';
-            replyText += `\n\n${construirVistaDeProductos(session)}`;
+        case 'solicitar_foto':
+            if (input === 'v') { s.step = 'viendo_productos'; reply = construirVistaDeProductos(s); } 
+            else { const idxFoto = parseInt(input) - 1; const itemsFoto = getItemsPorCategoria(s.categoriaActual); if (itemsFoto[idxFoto]?.imageUrl) { reply = `*${itemsFoto[idxFoto].name}* - $${itemsFoto[idxFoto].price}\n\nA para agregar | V para volver`; media = [itemsFoto[idxFoto].imageUrl]; s.itemFoto = itemsFoto[idxFoto]; s.step = 'foto_opciones'; } else { reply = "❌ Producto inválido o sin foto."; } }
+            break;
+        
+        case 'foto_opciones':
+            if (input.startsWith('a')) { const cantidad = parseInt(input.split(' ')[1] || "1"); if (!isNaN(cantidad) && cantidad > 0) { const existente = s.pedido.find(p => p.id === s.itemFoto.id); if (existente) existente.cantidad += cantidad; else s.pedido.push({ ...s.itemFoto, cantidad }); } }
+            s.step = 'viendo_productos'; reply = construirVistaDeProductos(s); delete s.itemFoto;
             break;
 
-        case 'confirmar':
-            switch (input) {
-                case 'f':
-                    replyText = "✅ ¡Tu pedido ha sido confirmado! Gracias.\n\n¿Qué deseas hacer ahora?\n*1️⃣* - Realizar otro pedido\n*2️⃣* - Finalizar conversación";
-                    session.step = 'post_pedido';
-                    break;
-                case 'v':
-                    session.step = 'viendo_productos';
-                    replyText = construirVistaDeProductos(session);
-                    break;
-                default:
-                    replyText = "❌ Opción no válida. Por favor, elige F o V.";
-            }
+        case 'solicitar_nombre':
+            s.nombre = body; const usuariosDir = cargarUsuarios();
+            if (usuariosDir[from]?.direccion) { s.step = 'usar_direccion_guardada'; reply = `Gracias, ${s.nombre}. ¿Usamos tu dirección guardada?\n*${usuariosDir[from].direccion}*\n(S/N)`; } 
+            else { s.step = 'solicitar_direccion'; reply = `Gracias, ${s.nombre}. Ingresa la dirección (calle y nro):`; }
             break;
 
-        case 'post_pedido':
-             if (input === '1') {
-                sessions[from] = { step: 'viendo_categorias', pedido: [] };
-                replyText = getCategoriasMenu();
-            } else if (input === '2') {
-                replyText = "¡Gracias por tu preferencia! Hasta pronto. 👋";
+        case 'usar_direccion_guardada':
+            if (input === 's') { s.direccion = cargarUsuarios()[from].direccion; s.step = 'solicitar_pago'; reply = "💰 Pago: E/T/MP"; }
+            else if(input === 'n') { s.step = 'solicitar_direccion'; reply = 'Ok, ingresa la nueva dirección:'; }
+            else { reply = 'Opción no válida (S/N)'; }
+            break;
+
+        case 'solicitar_direccion':
+            if (!direccionValida(body)) { reply = "❌ Dirección inválida. Ingresa calle y número."; } 
+            else { s.direccion = body.trim(); s.step = 'solicitar_pago'; reply = "💰 Pago: E/T/MP"; }
+            break;
+
+        case 'solicitar_pago':
+            if (!pagoValido(input)) { reply = "❌ Opción inválida. Usa E, T o MP."; } 
+            else {
+                const metodos = { e: 'Efectivo', t: 'Tarjeta', mp: 'MercadoPago' };
+                s.pago = metodos[input]; s.step = 'confirmacion_final';
+                const datos = { nombre: s.nombre || `Mesa ${s.mesa || ''}`, direccion: s.direccion, pago: s.pago, telefono: s.telefono, tipo: s.tipoPedido, mesa: s.mesa };
+                reply = `${formatearResumenParaLocal(s, datos)}\n\n---\n\n*¿Confirmas el pedido? (S/N)*`;
+            }
+            break;
+        
+        case 'confirmacion_final':
+            if (input === 's') {
+                const datosFinales = { nombre: s.nombre || `Mesa ${s.mesa}`, direccion: s.direccion, pago: s.pago, telefono: s.telefono, mesa: s.mesa, tipo: s.tipoPedido };
+                if (s.tipoPedido === 'domicilio') guardarUsuario(from, { nombre: s.nombre, direccion: s.direccion });
+                await enviarNotificaciones(formatearResumenParaLocal(s, datosFinales), formatearResumenParaEmail(s, datosFinales));
+                reply = "✅ ¡Pedido confirmado y enviado a la cocina!\nGracias por tu compra.";
                 delete sessions[from];
             } else {
-                replyText = "❌ Opción no válida. Por favor, elige 1 o 2.";
+                s.step = 'viendo_productos';
+                reply = `🚫 Pedido no confirmado. Puedes seguir modificándolo.\n\n${construirVistaDeProductos(s)}`;
             }
             break;
-
+        
         case 'confirmar_salida':
-            if (input === 'v') {
-                session.step = 'viendo_productos';
-                replyText = construirVistaDeProductos(session);
-            } else if (input === 's') {
-                replyText = "¡Gracias por tu preferencia! Hasta pronto. 👋";
-                delete sessions[from];
-            } else {
-                replyText = "❌ Opción no válida. Por favor, elige V o S.";
-            }
+            if (input === 's') { delete sessions[from]; reply = "👋 ¡Hasta pronto!"; }
+            else if (input === 'n') { s.step = s.previousStep || 'viendo_categorias'; reply = s.step === 'viendo_productos' ? construirVistaDeProductos(s) : getCategoriasMenu(); }
+            else { reply = "Opción no válida (S/N)"; }
             break;
     }
     
-    if (replyText) {
-        await client.messages.create({ body: replyText, from: twilioPhoneNumber, to: from });
+    if (reply || media) {
+        const messageData = { to: from, from: process.env.TWILIO_WHATSAPP_NUMBER, body: reply };
+        if(media) messageData.mediaUrl = media;
+        await client.messages.create(messageData);
     }
 }
 
+// --- Servidor Express ---
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
 
-// --- Ruta del Servidor y Ejecución ---
 app.post('/whatsapp', async (req, res) => {
-  const from = req.body.From;
-  const body = req.body.Body;
-  console.log(`Mensaje de ${from}: ${body}`);
-  await handleIncomingMessage(from, body);
-  res.status(200).send('OK');
+    const from = req.body.From;
+    const body = req.body.Body;
+    console.log(`Mensaje de ${from}: ${body}`);
+    await handleIncomingMessage(from, body);
+    res.status(200).send('OK');
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en el puerto ${PORT}`);
 });
