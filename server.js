@@ -188,17 +188,9 @@ case 'confirmacion_final':
             });
         }
 
-        await enviarNotificaciones(
-            formatearResumenParaLocal(s, datosFinales),
-            formatearResumenParaEmail(s, datosFinales)
-        );
-
-        reply = "✅ ¡Pedido confirmado y enviado a la cocina!\nGracias por tu compra.";
-        delete sessions[from];
-    } else {
+        // Construir el resumen final para mostrar al cliente (y no reenviarlo por WhatsApp)
         const now = new Date().toLocaleTimeString('es-UY');
         let resumen = `*¡RESUMEN DE SU PEDIDO!* - ${now}\n\n`;
-
         resumen += "--- *Detalle del Pedido* ---\n";
         let total = 0;
         s.pedido.forEach(item => {
@@ -216,10 +208,23 @@ case 'confirmacion_final':
 
         resumen += `💳 *Tipo de pago:* ${s.pago}\n`;
 
-        reply = `${resumen}\n---\n*¿Confirmas el pedido? (S/N)*`;
-        s.step = 'confirmacion_final';
+        // Enviar al restaurante
+        await enviarNotificaciones(
+            formatearResumenParaLocal(s, datosFinales),
+            formatearResumenParaEmail(s, datosFinales)
+        );
+
+        // Mostrar al cliente
+        reply = `${resumen}\n✅ ¡Pedido confirmado y enviado a la cocina!\nGracias por tu compra.`;
+        delete sessions[from];
+
+    } else {
+        // Cancelar confirmación y volver a productos
+        s.step = 'viendo_productos';
+        reply = `🚫 Pedido no confirmado. Puedes seguir modificándolo.\n\n${construirVistaDeProductos(s)}`;
     }
     break;
+
 
         case 'confirmar_salida':
             if (input === 's') { delete sessions[from]; reply = "👋 ¡Hasta pronto!"; }
