@@ -14,17 +14,16 @@ const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioClient = twilio(accountSid, authToken);
 
 const brevoApiInstance = new Brevo.TransactionalEmailsApi();
-try {
-    brevoApiInstance.apiClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
-    console.log('🔎 Enviando email con:');
-console.log('📨 TO:', process.env.RESTAURANT_EMAIL_ADDRESS);
-console.log('📤 SENDER:', process.env.SENDER_EMAIL_ADDRESS);
-console.log('🔐 API KEY (parcial):', process.env.BREVO_API_KEY?.substring(0, 5) || '❌ NO SETEADA');
 
+const brevoKey = process.env.BREVO_API_KEY;
 
-} catch (err) {
-    console.error('❌ No se pudo inicializar la API Key de Brevo.');
+if (!brevoKey || brevoKey.length < 10) {
+    console.error('❌ BREVO_API_KEY no configurada correctamente.');
+} else {
+    brevoApiInstance.apiClient.authentications['api-key'].apiKey = brevoKey;
+    console.log("🔐 Brevo API Key cargada correctamente.");
 }
+
 
 // --- Gestión de usuarios y sesiones ---
 const RUTA_USUARIOS = './usuarios.json';
