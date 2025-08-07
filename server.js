@@ -3,7 +3,8 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const Brevo = require('@getbrevo/brevo');
+const Brevo = require('sib-api-v3-sdk');
+const brevoClient = Brevo.ApiClient.instance;
 const twilio = require('twilio');
 const { categoriasUnicas, getCategoriasMenu, getItemsPorCategoria } = require('./menu');
 const fs = require('fs');
@@ -13,7 +14,12 @@ const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioClient = twilio(accountSid, authToken);
 
-const brevoApiInstance = new Brevo.TransactionalEmailsApi();
+// Configuración del API Key
+const apiKey = brevoClient.authentications['api-key'];
+apiKey.apiKey = process.env.BREVO_API_KEY;
+
+// Instancia del cliente
+const brevoApiInstance = new Brevo.TransactionalEmailsApi()
 
 const brevoKey = process.env.BREVO_API_KEY;
 
