@@ -27,7 +27,24 @@ function cargarUsuarios() { try { if (fs.existsSync(RUTA_USUARIOS)) { const data
 function guardarUsuario(from, userData) { try { const usuarios = cargarUsuarios(); usuarios[from] = { ...(usuarios[from] || {}), ...userData }; fs.writeFileSync(RUTA_USUARIOS, JSON.stringify(usuarios, null, 2)); } catch { } }
 
 // --- Formatos de notificación ---
-function formatearResumenParaLocal(session, datosFinales) { let texto = `*¡NUEVO PEDIDO RECIBIDO!* - ${new Date().toLocaleTimeString('es-UY')}\n\n`; texto += `*Cliente:* ${datosFinales.nombre}\n`; texto += `*Teléfono:* ${datosFinales.telefono.replace('whatsapp:', '')}\n`; texto += `*Tipo de pago:* ${datosFinales.pago}\n\n`; if (datosFinales.tipo === 'mesa') { texto += `*Tipo:* Mesa\n*Número:* ${datosFinales.mesa}\n\n`; } else { texto += `*Tipo:* Domicilio\n*Dirección:* ${datosFinales.direccion}\n\n`; } texto += "--- *Detalle del Pedido* ---\n"; let total = 0; session.pedido.forEach(item => { const subtotal = item.price * item.cantidad; texto += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`; total += subtotal; }); texto += `\n*TOTAL: $${total}*`; return texto; }
+function formatearResumenParaLocal(session, datosFinales) {
+    let texto = `*¡NUEVO PEDIDO RECIBIDO!* - ${new Date().toLocaleTimeString('es-UY')}\n\n`;
+    texto += `*Cliente:* ${datosFinales.nombre}\n`;
+    texto += `*Teléfono:* ${datosFinales.telefono.replace('whatsapp:', '')}\n`;
+    texto += `*Tipo de pago:* ${datosFinales.pago}\n\n`;
+    if (datosFinales.tipo === 'mesa') {
+        texto += `*Tipo:* Mesa\n*Número:* ${datosFinales.mesa}\n\n`;
+    } else {
+        texto += `*Tipo:* Domicilio\n*Dirección:* ${datosFinales.direccion}\n\n`;
+    } texto += "--- *Detalle del Pedido* ---\n";
+    let total = 0;
+    session.pedido.forEach(item => {
+        const subtotal = item.price * item.cantidad;
+        texto += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`;
+        total += subtotal;
+    }); texto += `\n*TOTAL: $${total}*`; return texto;
+}
+
 function formatearResumenParaEmail(session, datosFinales) { let html = `<h1>Nuevo Pedido</h1>`; html += `<p><strong>Cliente:</strong> ${datosFinales.nombre}</p>`; html += `<p><strong>Teléfono:</strong> ${datosFinales.telefono.replace('whatsapp:', '')}</p>`; html += `<p><strong>Tipo de pago:</strong> ${datosFinales.pago}</p>`; if (datosFinales.tipo === 'mesa') { html += `<p><strong>Tipo:</strong> Mesa</p><p><strong>Número:</strong> ${datosFinales.mesa}</p>`; } else { html += `<p><strong>Tipo:</strong> Domicilio</p><p><strong>Dirección:</strong> ${datosFinales.direccion}</p>`; } html += "<h2>Detalle</h2><ul>"; let total = 0; session.pedido.forEach(item => { const subtotal = item.price * item.cantidad; html += `<li>${item.cantidad}x ${item.name} - $${subtotal}</li>`; total += subtotal; }); html += `</ul><h3>Total: $${total}</h3>`; return html; }
 
 // --- Enviar notificaciones ---
@@ -166,64 +183,65 @@ async function handleIncomingMessage(from, body) {
                 const metodos = { e: 'Efectivo', t: 'Tarjeta', mp: 'MercadoPago' };
                 s.pago = metodos[input]; s.step = 'confirmacion_final';
                 const datos = { nombre: s.nombre || `Mesa ${s.mesa || ''}`, direccion: s.direccion, pago: s.pago, telefono: s.telefono, tipo: s.tipoPedido, mesa: s.mesa };
-                reply = `${formatearResumenParaLocal(s, datos)}\n\n---\n\n*¿Confirmas el pedido? (S/N)*`;
+                reply = construirResumenParaCliente(s, datos);
+
             }
             break;
 
-case 'confirmacion_final':
-    if (input === 's') {
-        const datosFinales = {
-            nombre: s.nombre || `Mesa ${s.mesa}`,
-            direccion: s.direccion,
-            pago: s.pago,
-            telefono: s.telefono,
-            mesa: s.mesa,
-            tipo: s.tipoPedido
-        };
+        case 'confirmacion_final':
+            if (input === 's') {
+                const datosFinales = {
+                    nombre: s.nombre || `Mesa ${s.mesa}`,
+                    direccion: s.direccion,
+                    pago: s.pago,
+                    telefono: s.telefono,
+                    mesa: s.mesa,
+                    tipo: s.tipoPedido
+                };
 
-        if (s.tipoPedido === 'domicilio') {
-            guardarUsuario(from, {
-                nombre: s.nombre,
-                direccion: s.direccion
-            });
-        }
+                if (s.tipoPedido === 'domicilio') {
+                    guardarUsuario(from, {
+                        nombre: s.nombre,
+                        direccion: s.direccion
+                    });
+                }
 
-        // Construir el resumen final para mostrar al cliente (y no reenviarlo por WhatsApp)
-        const now = new Date().toLocaleTimeString('es-UY');
-        let resumen = `*¡RESUMEN DE SU PEDIDO!* - ${now}\n\n`;
-        resumen += "--- *Detalle del Pedido* ---\n";
-        let total = 0;
-        s.pedido.forEach(item => {
-            const subtotal = item.price * item.cantidad;
-            resumen += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`;
-            total += subtotal;
-        });
-        resumen += `\n*TOTAL: $${total}*\n\n`;
+                // Construir el resumen final para mostrar al cliente (y no reenviarlo por WhatsApp)
+                const now = new Date().toLocaleTimeString('es-UY');
+                let resumen = `*¡RESUMEN DE SU PEDIDO!* - ${now}\n\n`;
+                resumen += "--- *Detalle del Pedido* ---\n";
+                let total = 0;
+                s.pedido.forEach(item => {
+                    const subtotal = item.price * item.cantidad;
+                    resumen += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`;
+                    total += subtotal;
+                });
+                resumen += `\n*TOTAL: $${total}*\n\n`;
 
-        if (s.tipoPedido === 'mesa') {
-            resumen += `🪑 *Tipo:* Mesa\n🔢 *Número:* ${s.mesa}\n`;
-        } else {
-            resumen += `📦 *Tipo:* Domicilio\n📍 *Dirección:* ${s.direccion}\n`;
-        }
+                if (s.tipoPedido === 'mesa') {
+                    resumen += `🪑 *Tipo:* Mesa\n🔢 *Número:* ${s.mesa}\n`;
+                } else {
+                    resumen += `📦 *Tipo:* Domicilio\n📍 *Dirección:* ${s.direccion}\n`;
+                }
 
-        resumen += `💳 *Tipo de pago:* ${s.pago}\n`;
+                resumen += `💳 *Tipo de pago:* ${s.pago}\n`;
 
-        // Enviar al restaurante
-        await enviarNotificaciones(
-            formatearResumenParaLocal(s, datosFinales),
-            formatearResumenParaEmail(s, datosFinales)
-        );
+                // Enviar al restaurante
+                await enviarNotificaciones(
+                    formatearResumenParaLocal(s, datosFinales),
+                    formatearResumenParaEmail(s, datosFinales)
+                );
 
-        // Mostrar al cliente
-        reply = `${resumen}\n✅ ¡Pedido confirmado y enviado a la cocina!\nGracias por tu compra.`;
-        delete sessions[from];
+                // Mostrar al cliente
+                reply = `${resumen}\n✅ ¡Pedido confirmado y enviado a la cocina!\nGracias por tu compra.`;
+                delete sessions[from];
 
-    } else {
-        // Cancelar confirmación y volver a productos
-        s.step = 'viendo_productos';
-        reply = `🚫 Pedido no confirmado. Puedes seguir modificándolo.\n\n${construirVistaDeProductos(s)}`;
-    }
-    break;
+            } else {
+                // Cancelar confirmación y volver a productos
+                s.step = 'viendo_productos';
+                reply = `🚫 Pedido no confirmado. Puedes seguir modificándolo.\n\n${construirVistaDeProductos(s)}`;
+            }
+            break;
 
 
         case 'confirmar_salida':
@@ -239,6 +257,29 @@ case 'confirmacion_final':
         await client.messages.create(messageData);
     }
 }
+
+function construirResumenParaCliente(session, datosFinales) {
+    const now = new Date().toLocaleTimeString('es-UY');
+    let resumen = `*¡RESUMEN DE SU PEDIDO!* - ${now}\n\n`;
+    resumen += "--- *Detalle del Pedido* ---\n";
+    let total = 0;
+    session.pedido.forEach(item => {
+        const subtotal = item.price * item.cantidad;
+        resumen += `• ${item.cantidad}x ${item.name} ($${item.price}) - $${subtotal}\n`;
+        total += subtotal;
+    });
+    resumen += `\n*TOTAL: $${total}*\n\n`;
+
+    if (datosFinales.tipo === 'mesa') {
+        resumen += `🪑 *Tipo:* Mesa\n🔢 *Número:* ${datosFinales.mesa}\n`;
+    } else {
+        resumen += `📦 *Tipo:* Domicilio\n📍 *Dirección:* ${datosFinales.direccion}\n`;
+    }
+
+    resumen += `💳 *Tipo de pago:* ${datosFinales.pago}\n`;
+    return `${resumen}\n*¿Confirmas el pedido? (S/N)*`;
+}
+
 
 // --- Servidor Express ---
 const app = express();
