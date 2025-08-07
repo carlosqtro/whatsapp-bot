@@ -16,6 +16,12 @@ const twilioClient = twilio(accountSid, authToken);
 const brevoApiInstance = new Brevo.TransactionalEmailsApi();
 try {
     brevoApiInstance.apiClient.authentications['api-key'].apiKey = process.env.BREVO_API_KEY;
+    console.log('🔎 Enviando email con:');
+console.log('📨 TO:', process.env.RESTAURANT_EMAIL_ADDRESS);
+console.log('📤 SENDER:', process.env.SENDER_EMAIL_ADDRESS);
+console.log('🔐 API KEY (parcial):', process.env.BREVO_API_KEY?.substring(0, 5) || '❌ NO SETEADA');
+
+
 } catch (err) {
     console.error('❌ No se pudo inicializar la API Key de Brevo.');
 }
@@ -62,7 +68,14 @@ async function enviarNotificaciones(resumenTexto, resumenHtml) {
     catch (error) { console.error('❌ Error WhatsApp:', error.message); }
     try {
         let email = new Brevo.SendSmtpEmail();
-        email.subject = "Nuevo Pedido"; email.htmlContent = resumenHtml; email.sender = { name: "Bot Pedidos", email: process.env.SENDER_EMAIL_ADDRESS }; email.to = [{ email: process.env.RESTAURANT_EMAIL_ADDRESS }]; await brevoApiInstance.sendTransacEmail(email); console.log('✅ Email enviado.');
+        email.subject = "Nuevo Pedido"; 
+        email.htmlContent = resumenHtml; 
+        email.sender = { 
+            name: "Bot Pedidos", 
+            email: process.env.SENDER_EMAIL_ADDRESS }; 
+            email.to = [{ email: process.env.RESTAURANT_EMAIL_ADDRESS }]; 
+            await brevoApiInstance.sendTransacEmail(email); 
+            console.log('✅ Email enviado.');
     } catch (error) { console.error('❌ Error Email:', error.message); }
 }
 
@@ -183,6 +196,7 @@ async function handleIncomingMessage(from, body) {
                 const metodos = { e: 'Efectivo', t: 'Tarjeta', mp: 'MercadoPago' };
                 s.pago = metodos[input]; s.step = 'confirmacion_final';
                 const datos = { nombre: s.nombre || `Mesa ${s.mesa || ''}`, direccion: s.direccion, pago: s.pago, telefono: s.telefono, tipo: s.tipoPedido, mesa: s.mesa };
+                // Esta linea la debo comentar o sacar
                 reply = construirResumenParaCliente(s, datos);
 
             }
